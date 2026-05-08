@@ -454,14 +454,18 @@ function setupEventListeners() {
             return;
         }
 
-        // Rename columns to match expected names
+        // Detect ว่า province column เป็นรหัส (ตัวเลข) หรือชื่อ
+        const sampleProv = (_pendingUploadJson[0][provCol] || '').toString().trim();
+        const isCodeData = /^\d{2,6}$/.test(sampleProv);
+
+        // Rename columns: ถ้าเป็นรหัสใช้ "รหัสจังหวัด" เพื่อให้ processData detect ได้
         const remapped = _pendingUploadJson.map(row => {
             const newRow = {};
             newRow['วันที่'] = row[dateCol];
-            newRow['จังหวัด'] = row[provCol];
-            if (distCol) newRow['อำเภอ'] = row[distCol];
-            if (subCol) newRow['ตำบล'] = row[subCol];
-            newRow[valCol] = row[valCol]; // keep original column name for legend
+            newRow[isCodeData ? 'รหัสจังหวัด' : 'จังหวัด'] = row[provCol];
+            if (distCol) newRow[isCodeData ? 'รหัสอำเภอ' : 'อำเภอ'] = row[distCol];
+            if (subCol) newRow[isCodeData ? 'รหัสตำบล' : 'ตำบล'] = row[subCol];
+            newRow[valCol] = row[valCol];
             return newRow;
         });
 
@@ -725,15 +729,62 @@ function updateColors() {
 function calculateGlobalStats() {
     let allValues = [];
     let totalSum = 0;
+    let maxVal = 0, maxLocationKey = '', maxPeriod = '';
+
     weeks.forEach(w => {
-        const counts = groupedData[w].counts;
-        Object.values(counts).forEach(val => {
+        const weekData = groupedData[w];
+        if (!weekData) return;
+        const counts = weekData.counts;
+        Object.entries(counts).forEach(([loc, val]) => {
             allValues.push(val);
             totalSum += val;
+            if (val > maxVal) {
+                maxVal = val;
+                maxLocationKey = loc;
+                maxPeriod = weekData.label || w;
+            }
         });
     });
 
     globalStats = calculateStats(allValues, totalSum);
+    globalStats.maxLocation = _resolveLocationName(maxLocationKey);
+    globalStats.maxPeriod = maxPeriod;
+}
+
+// แปลง matchKey (code/compound) → ชื่อไทยอ่านง่าย
+function _resolveLocationName(key) {
+    if (!key) return '';
+
+    // ถ้าเป็นตัวเลข (code mode) → lookup จาก GeoJSON
+    if (/^\d+$/.test(key)) {
+        const code = key;
+        const geoSrc = code.length >= 6 ? window.DATA_TH_SUBDISTRICTS
+                     : code.length >= 4 ? window.DATA_TH_DISTRICTS
+                     : window.DATA_TH_PROVINCES;
+        if (geoSrc) {
+            const feat = geoSrc.features.find(f => {
+                if (code.length >= 6) return (f.properties.Admin_code || '').toString().padStart(6, '0') === code.padStart(6, '0');
+                if (code.length >= 4) {
+                    const fc = (f.properties.P_code || '').toString().padStart(2, '0') + (f.properties.A_code || '').toString().padStart(2, '0');
+                    return fc === code.padStart(4, '0');
+                }
+                return (f.properties.P_code || '').toString().padStart(2, '0') === code.padStart(2, '0');
+            });
+            if (feat) {
+                const p = feat.properties;
+                if (code.length >= 6) return `ต.${(p.T_Name_T || '').replace(/ตำบล/g, '')} อ.${(p.A_Name_T || '').replace(/อำเภอ/g, '')}`;
+                if (code.length >= 4) return `อ.${(p.A_Name_T || '').replace(/อำเภอ/g, '')} จ.${(p.P_Name_T || '').replace(/จังหวัด/g, '')}`;
+                return (p.P_Name_T || '').replace(/จังหวัด/g, '').trim();
+            }
+        }
+        return key;
+    }
+
+    // ถ้าเป็น compound name (เช่น "เชียงราย|เมืองเชียงราย|เวียง")
+    const parts = key.split('|');
+    if (parts.length === 3) return `ต.${parts[2]} อ.${parts[1]}`;
+    if (parts.length === 2) return `อ.${parts[1]} จ.${parts[0]}`;
+    return parts[0];
 }
 
 function findProvinceForLocation(loc) {
@@ -918,13 +969,36 @@ function groupDataByWeek() {
     let globalMax = null;
 
     // 1. หาช่วงวันที่ที่กว้างที่สุดในข้อมูล
+    // สร้าง code→name lookup สำหรับ scope filter (ใช้เมื่อข้อมูลเป็นรหัส)
+    const _provCodeToName = {};
+    if (window._matchMode === 'code' && window.DATA_TH_PROVINCES) {
+        window.DATA_TH_PROVINCES.features.forEach(f => {
+            const code = (f.properties.P_code || '').toString().padStart(2, '0');
+            const name = normalizeThaiName(f.properties.P_Name_T || '');
+            if (code && name) _provCodeToName[code] = name;
+        });
+    }
+
     patientData.forEach(p => {
         const dateStr = p[dataKeys.date];
         const date = parseDateRobust(dateStr);
 
         if (date && !isNaN(date)) {
             let locName = (p[dataKeys.location] || "").toString().replace(/จังหวัด|อำเภอ|ตำบล|จ\.|อ\.|ต\./g, "").trim();
-            const pName = normalizeThaiName(locationToProvinceMap[locName] || locName);
+            
+            // หาชื่อจังหวัดจากหลายแหล่ง
+            let pName = '';
+            if (window._matchMode === 'code' && window._codeKeys.province) {
+                // Code mode: แปลงรหัส → ชื่อจังหวัด
+                const rawCode = (p[window._codeKeys.province] || '').toString().replace(/\D/g, '').padStart(2, '0');
+                pName = _provCodeToName[rawCode] || rawCode;
+            } else if (dataKeys.province && p[dataKeys.province]) {
+                pName = normalizeThaiName(p[dataKeys.province]);
+            } else if (locationToProvinceMap[locName]) {
+                pName = normalizeThaiName(locationToProvinceMap[locName]);
+            } else {
+                pName = normalizeThaiName(locName);
+            }
 
             // Scope Check
             if (currentScope.region !== 'all') {
@@ -933,6 +1007,16 @@ function groupDataByWeek() {
             }
             if (currentScope.province !== 'all') {
                 if (pName !== normalizeThaiName(currentScope.province)) return;
+            }
+            if (currentScope.district !== 'all') {
+                // หาชื่ออำเภอจากข้อมูล
+                let dName = '';
+                if (dataKeys.district && p[dataKeys.district]) {
+                    dName = normalizeThaiName(p[dataKeys.district]);
+                } else if (currentDataLevel === 'district' || currentDataLevel === 'subdistrict') {
+                    dName = normalizeThaiName(locName);
+                }
+                if (dName !== normalizeThaiName(currentScope.district)) return;
             }
 
             if (!globalMin || date < globalMin) globalMin = new Date(date);
@@ -1328,6 +1412,12 @@ function updateStatsUI(stats) {
                     <div style="font-weight: 600; font-size: 0.85rem;">${stats.median}</div>
                 </div>
             </div>
+            ${stats.maxLocation ? `
+            <div style="margin-top: 8px; border-top: 1px solid rgba(59, 130, 246, 0.15); padding-top: 6px;">
+                <div style="color: #94a3b8; font-size: 0.55rem;">📍 สูงสุดที่</div>
+                <div style="color: #fbbf24; font-size: 0.7rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${stats.maxLocation}</div>
+                <div style="color: #94a3b8; font-size: 0.55rem; margin-top: 2px;">📅 ${stats.maxPeriod}</div>
+            </div>` : ''}
         `;
         return div;
     };
@@ -1563,12 +1653,15 @@ document.getElementById('apply-settings-btn').addEventListener('click', () => {
         showLoader("กำลังประมวลผลข้อมูลใหม่...");
         setTimeout(() => {
             groupDataByWeek();
-            initTimeline();
-            calculateGlobalStats();
-            if (statsControl) map.removeControl(statsControl);
-            updateStatsUI(globalStats); // สร้าง Stats ก่อน
-            updateUIElements();
-            updateMapForCurrentWeek(); // Legend จะถูกสร้างในนี้ ซึ่งจะซ้อนบน Stats
+            if (weeks.length > 0) {
+                initTimeline();
+                calculateGlobalStats();
+                if (statsControl) { map.removeControl(statsControl); statsControl = null; }
+                updateStatsUI(globalStats);
+                updateUIElements();
+                generateBreaksUI(true);
+                updateMapForCurrentWeek();
+            }
             hideLoader();
         }, 500);
     }
@@ -1687,9 +1780,13 @@ function handleConverterFileUpload(file) {
     reader.readAsArrayBuffer(file);
 }
 
-// สร้าง Reference Map จาก GeoJSON: ชื่อไทย → { english, code }
+// สร้าง Reference Map จาก GeoJSON: ชื่อไทย → { english, code } + reverse code→name
 function generateReferenceMap() {
-    const refMap = { provinces: {}, districts: {}, subdistricts: {} };
+    const refMap = {
+        provinces: {}, districts: {}, subdistricts: {},
+        // Reverse: code → { thai, english }
+        byCode: { provinces: {}, districts: {}, subdistricts: {} }
+    };
     const strip = s => (s || '').toString().replace(/จังหวัด|อำเภอ|ตำบล|จ\.|อ\.|ต\./g, '').trim();
     const stripEng = s => (s || '').toString().replace(/^(CHANGWAT|AMPHOE|KING AMPHOE|TAMBON)\s+/i, '').trim();
     const layers = [
@@ -1703,16 +1800,33 @@ function generateReferenceMap() {
             const p = f.properties;
             if (level === 'province') {
                 const key = strip(p.P_Name_T || p.changwat || '');
-                if (key) refMap.provinces[key] = { english: stripEng(p.P_Name_E || ''), code: (p.P_code || '').toString().padStart(2, '0') };
+                const eng = stripEng(p.P_Name_E || '');
+                const code = (p.P_code || '').toString().padStart(2, '0');
+                if (key) {
+                    refMap.provinces[key] = { english: eng, code };
+                    refMap.byCode.provinces[code] = { thai: key, english: eng };
+                }
             } else if (level === 'district') {
                 const pKey = strip(p.P_Name_T || '');
                 const aKey = strip(p.A_Name_T || p.amphur || '');
-                if (aKey) refMap.districts[`${pKey}|${aKey}`] = { english: stripEng(p.A_Name_E || ''), code: (p.P_code || '').toString().padStart(2, '0') + (p.A_code || '').toString().padStart(2, '0') };
+                const eng = stripEng(p.A_Name_E || '');
+                const pCode = (p.P_code || '').toString().padStart(2, '0');
+                const aCode = (p.A_code || '').toString().padStart(2, '0');
+                const fullCode = pCode + aCode;
+                if (aKey) {
+                    refMap.districts[`${pKey}|${aKey}`] = { english: eng, code: fullCode };
+                    refMap.byCode.districts[fullCode] = { thai: aKey, english: eng, province: pKey };
+                }
             } else {
                 const pKey = strip(p.P_Name_T || '');
                 const aKey = strip(p.A_Name_T || '');
                 const tKey = strip(p.T_Name_T || p.tambon || '');
-                if (tKey) refMap.subdistricts[`${pKey}|${aKey}|${tKey}`] = { english: stripEng(p.T_Name_E || ''), code: (p.Admin_code || '').toString().padStart(6, '0') };
+                const eng = stripEng(p.T_Name_E || '');
+                const adminCode = (p.Admin_code || '').toString().padStart(6, '0');
+                if (tKey) {
+                    refMap.subdistricts[`${pKey}|${aKey}|${tKey}`] = { english: eng, code: adminCode };
+                    refMap.byCode.subdistricts[adminCode] = { thai: tKey, english: eng, district: aKey, province: pKey };
+                }
             }
         });
     });
@@ -1732,28 +1846,65 @@ function processConverterData(data, config) {
     data.forEach(row => {
         const date = parseDateRobust(row[dateCol]);
         if (!date || isNaN(date)) return;
-        const prov = strip(row[provCol]);
-        let dist = distCol ? strip(row[distCol]) : '';
-        const sub = subCol ? strip(row[subCol]) : '';
-        if (!prov) return;
-        dist = _expandMueang(dist, prov); // "เมือง" → "เมืองเชียงราย"
+        let rawProv = (row[provCol] || '').toString().trim();
+        let rawDist = distCol ? (row[distCol] || '').toString().trim() : '';
+        let rawSub = subCol ? (row[subCol] || '').toString().trim() : '';
+        if (!rawProv) return;
+
+        // Detect: input เป็นรหัสหรือชื่อ?
+        const isCodeInput = /^\d{2,6}$/.test(rawProv);
+        let prov, dist, sub;
+
+        if (isCodeInput) {
+            // --- Input เป็นรหัส → ใช้ reverse lookup ---
+            const pCode = rawProv.toString().padStart(2, '0');
+            const pRef = refMap.byCode.provinces[pCode];
+            prov = pRef ? pRef.thai : rawProv;
+
+            if (rawDist) {
+                const dCode = rawDist.toString().padStart(4, '0');
+                const dRef = refMap.byCode.districts[dCode];
+                dist = dRef ? dRef.thai : rawDist;
+            } else { dist = ''; }
+
+            if (rawSub) {
+                const sCode = rawSub.toString().padStart(6, '0');
+                const sRef = refMap.byCode.subdistricts[sCode];
+                sub = sRef ? sRef.thai : rawSub;
+            } else { sub = ''; }
+        } else {
+            // --- Input เป็นชื่อ ---
+            prov = strip(rawProv);
+            dist = distCol ? strip(rawDist) : '';
+            sub = subCol ? strip(rawSub) : '';
+            dist = _expandMueang(dist, prov);
+        }
 
         let outProv = prov, outDist = dist, outSub = sub;
-        if (outputFormat !== 'thai') {
+        if (outputFormat === 'english') {
             const pRef = refMap.provinces[prov];
-            if (pRef) outProv = outputFormat === 'english' ? pRef.english : pRef.code;
-            else unmatchedSet.add(prov);
+            outProv = pRef ? pRef.english : prov;
             if (dist) {
                 const dRef = refMap.districts[`${prov}|${dist}`];
-                if (dRef) outDist = outputFormat === 'english' ? dRef.english : dRef.code;
-                else unmatchedSet.add(dist);
+                outDist = dRef ? dRef.english : dist;
             }
             if (sub) {
                 const sRef = refMap.subdistricts[`${prov}|${dist}|${sub}`];
-                if (sRef) outSub = outputFormat === 'english' ? sRef.english : sRef.code;
-                else unmatchedSet.add(sub);
+                outSub = sRef ? sRef.english : sub;
+            }
+        } else if (outputFormat === 'code') {
+            const pRef = refMap.provinces[prov];
+            if (pRef) outProv = pRef.code; else unmatchedSet.add(prov);
+            if (dist) {
+                const dRef = refMap.districts[`${prov}|${dist}`];
+                if (dRef) outDist = dRef.code; else unmatchedSet.add(dist);
+            }
+            if (sub) {
+                const sRef = refMap.subdistricts[`${prov}|${dist}|${sub}`];
+                if (sRef) outSub = sRef.code; else unmatchedSet.add(sub);
             }
         }
+        // outputFormat === 'thai' → outProv/outDist/outSub already Thai
 
         const dateKey = _localDateKey(date);
         const locKey = [outProv, outDist, outSub].filter(Boolean).join('|');
@@ -2058,11 +2209,15 @@ async function applyScopeFilter() {
         showLoader("กำลังประมวลผลข้อมูลตามขอบเขตใหม่...");
         setTimeout(() => {
             groupDataByWeek();
-            calculateGlobalStats();
-            if (statsControl) map.removeControl(statsControl);
-            updateStatsUI(globalStats);
-            updateUIElements();
-            updateMapForCurrentWeek();
+            if (weeks.length > 0) {
+                initTimeline();
+                calculateGlobalStats();
+                if (statsControl) { map.removeControl(statsControl); statsControl = null; }
+                updateStatsUI(globalStats);
+                updateUIElements();
+                generateBreaksUI(true);
+                updateMapForCurrentWeek();
+            }
             hideLoader();
         }, 300);
     } else {

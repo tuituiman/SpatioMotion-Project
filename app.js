@@ -57,6 +57,7 @@ let locationToProvinceMap = {}; // Cache สำหรับหาจังหว
 let legendControl = null;
 let statsControl = null;
 let dataGroupingMode = 'weekly'; // 'daily', 'weekly', 'monthly', 'yearly'
+let displayValueMode = 'periodic'; // 'periodic', 'cumulative'
 let dataWorker = null;
 
 const monthsShort = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
@@ -370,6 +371,16 @@ function setupEventListeners() {
             handleFileUpload(e.dataTransfer.files[0]);
         }
     });
+
+    // Reset Application Button
+    const resetAppBtn = document.getElementById('reset-app-btn');
+    if (resetAppBtn) {
+        resetAppBtn.addEventListener('click', () => {
+            if (confirm("คุณต้องการรีเซ็ตแอปพลิเคชันและล้างข้อมูลที่โหลดมาทั้งหมดหรือไม่?")) {
+                window.location.reload();
+            }
+        });
+    }
 
     // Map Scope Toggle
     document.querySelectorAll('input[name="map-scope"]').forEach(radio => {
@@ -702,6 +713,7 @@ function processData(json) {
     hideLoader();
     document.getElementById('timeline').style.display = 'flex';
     document.getElementById('choro-settings').style.display = 'block';
+    document.getElementById('open-compare-btn').style.display = 'flex';
 
     calculateGlobalStats();
     updateStatsUI(globalStats);
@@ -734,8 +746,8 @@ function calculateGlobalStats() {
     weeks.forEach(w => {
         const weekData = groupedData[w];
         if (!weekData) return;
-        const counts = weekData.counts;
-        Object.entries(counts).forEach(([loc, val]) => {
+        const activeCounts = displayValueMode === 'cumulative' ? weekData.cumulativeCounts : weekData.counts;
+        Object.entries(activeCounts).forEach(([loc, val]) => {
             allValues.push(val);
             totalSum += val;
             if (val > maxVal) {
@@ -1116,14 +1128,31 @@ function groupDataByWeek() {
         // เรายังยอมให้ทำงานต่อ แต่เตือนไว้ก่อน
     }
 
+    let runningCounts = {};
+    let runningTotal = 0;
+
     weeks.forEach(w => {
         const data = weekMap[w];
-        const values = Object.values(data.counts);
+        const currentCounts = data.counts;
+        const cumulativeCounts = { ...runningCounts };
+        
+        Object.entries(currentCounts).forEach(([loc, count]) => {
+            cumulativeCounts[loc] = (cumulativeCounts[loc] || 0) + count;
+        });
+        
+        runningTotal += data.total;
+
+        const values = Object.values(currentCounts);
         groupedData[w] = {
             label: data.label, // เก็บ Label จริงไว้แสดงผล
-            counts: data.counts,
+            counts: currentCounts,
+            cumulativeCounts: cumulativeCounts,
+            total: data.total,
+            cumulativeTotal: runningTotal,
             stats: calculateStats(values, data.total)
         };
+
+        runningCounts = { ...cumulativeCounts }; // อัปเดตยอดสะสมสำหรับลูปถัดไป
     });
 }
 
@@ -1178,9 +1207,10 @@ function updateMapForCurrentWeek() {
     const weekKey = weeks[currentWeekIndex];
     const data = groupedData[weekKey];
 
-
     document.getElementById('current-week-label').innerText = data.label; // ใช้ Label ที่เก็บไว้
-    renderChoropleth(data.counts, data.stats);
+    
+    const activeCounts = displayValueMode === 'cumulative' ? data.cumulativeCounts : data.counts;
+    renderChoropleth(activeCounts, data.stats);
 }
 
 function renderChoropleth(counts, stats) {
@@ -1292,10 +1322,11 @@ function renderChoropleth(counts, stats) {
         });
 
         if (val > 0) {
+            const displayLabel = displayValueMode === 'cumulative' ? 'จำนวนสะสม' : 'จำนวน';
             layer.bindTooltip(`
                 <div style="text-align: center;">
                     <div style="font-weight: bold; margin-bottom: 4px; color: #3b82f6;">${fullName || name}</div>
-                    <div style="font-size: 1.1rem;">${dataKeys.patients || 'จำนวน'}: <span style="color: #ef4444; font-weight: bold;">${val.toLocaleString()}</span></div>
+                    <div style="font-size: 1.1rem;">${displayLabel}: <span style="color: #ef4444; font-weight: bold;">${val.toLocaleString()}</span></div>
                 </div>
             `, { sticky: true, direction: 'auto', className: 'custom-tooltip' });
 
@@ -1659,6 +1690,7 @@ document.getElementById('close-epi-modal').addEventListener('click', () => {
 
 document.getElementById('apply-settings-btn').addEventListener('click', () => {
     const selectedMode = document.querySelector('input[name="group-mode"]:checked').value;
+    const selectedDisplayMode = document.querySelector('input[name="display-value-mode"]:checked').value;
 
     // Reset defaults
     customEpiSettings.enabled = false;
@@ -1669,6 +1701,8 @@ document.getElementById('apply-settings-btn').addEventListener('click', () => {
     } else {
         dataGroupingMode = selectedMode;
     }
+    
+    displayValueMode = selectedDisplayMode;
 
     if (patientData.length > 0) {
         showLoader("กำลังประมวลผลข้อมูลใหม่...");

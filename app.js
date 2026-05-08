@@ -2107,6 +2107,7 @@ document.getElementById('apply-conv-result').addEventListener('click', () => {
         initTimeline();
         document.getElementById('timeline').style.display = 'flex';
         document.getElementById('choro-settings').style.display = 'block';
+        document.getElementById('open-compare-btn').style.display = 'flex';
         calculateGlobalStats();
         updateStatsUI(globalStats);
         updateUIElements();

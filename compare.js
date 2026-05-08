@@ -50,9 +50,10 @@ function initCompareMaps() {
     for (let i = 0; i < 4; i++) {
         if (!compareMaps[i]) {
             compareMaps[i] = L.map(`compare-map-${i}`, {
-                zoomControl: true,
+                zoomControl: false,
                 attributionControl: false
             });
+            L.control.zoom({ position: 'topright' }).addTo(compareMaps[i]);
 
             // Add tile layer
             L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(compareMaps[i]);
@@ -66,7 +67,7 @@ function initCompareMaps() {
 
             compareMaps[i].createPane('maskPane');
             compareMaps[i].getPane('maskPane').style.zIndex = 450;
-            
+
             compareMaps[i].createPane('borders');
             compareMaps[i].getPane('borders').style.zIndex = 600;
 
@@ -119,7 +120,7 @@ function syncCompareMasks() {
     compareMaskLayers.forEach((ml, i) => {
         if (ml && compareMaps[i]) compareMaps[i].removeLayer(ml);
     });
-    
+
     if (!currentScope || (currentScope.region === 'all' && currentScope.province === 'all' && currentScope.district === 'all')) return;
 
     const worldCoords = [[90, -180], [90, 180], [-90, 180], [-90, -180], [90, -180]];

@@ -971,12 +971,29 @@ function groupDataByWeek() {
     // 1. หาช่วงวันที่ที่กว้างที่สุดในข้อมูล
     // สร้าง code→name lookup สำหรับ scope filter (ใช้เมื่อข้อมูลเป็นรหัส)
     const _provCodeToName = {};
-    if (window._matchMode === 'code' && window.DATA_TH_PROVINCES) {
-        window.DATA_TH_PROVINCES.features.forEach(f => {
-            const code = (f.properties.P_code || '').toString().padStart(2, '0');
-            const name = normalizeThaiName(f.properties.P_Name_T || '');
-            if (code && name) _provCodeToName[code] = name;
-        });
+    const _distCodeToName = {};
+    if (window._matchMode === 'code') {
+        if (window.DATA_TH_PROVINCES) {
+            window.DATA_TH_PROVINCES.features.forEach(f => {
+                const code = (f.properties.P_code || '').toString().padStart(2, '0');
+                const name = normalizeThaiName(f.properties.P_Name_T || '');
+                if (code && name) _provCodeToName[code] = name;
+            });
+        }
+        if (window.DATA_TH_DISTRICTS) {
+            window.DATA_TH_DISTRICTS.features.forEach(f => {
+                let code = '';
+                if (f.properties.Admin_code) {
+                    code = f.properties.Admin_code.toString().replace(/\D/g, '').padStart(4, '0');
+                } else {
+                    const pCode = (f.properties.P_code || '').toString().padStart(2, '0');
+                    const aCode = (f.properties.A_code || '').toString().padStart(2, '0');
+                    code = pCode + aCode;
+                }
+                const name = normalizeThaiName(f.properties.A_Name_T || f.properties.AM_TN || f.properties.name || '');
+                if (code && name) _distCodeToName[code] = name;
+            });
+        }
     }
 
     patientData.forEach(p => {
@@ -1011,7 +1028,11 @@ function groupDataByWeek() {
             if (currentScope.district !== 'all') {
                 // หาชื่ออำเภอจากข้อมูล
                 let dName = '';
-                if (dataKeys.district && p[dataKeys.district]) {
+                if (window._matchMode === 'code' && window._codeKeys.district) {
+                    // Code mode: แปลงรหัส → ชื่ออำเภอ
+                    const rawDistCode = (p[window._codeKeys.district] || '').toString().replace(/\D/g, '').padStart(4, '0');
+                    dName = _distCodeToName[rawDistCode] || rawDistCode;
+                } else if (dataKeys.district && p[dataKeys.district]) {
                     dName = normalizeThaiName(p[dataKeys.district]);
                 } else if (currentDataLevel === 'district' || currentDataLevel === 'subdistrict') {
                     dName = normalizeThaiName(locName);
@@ -1397,11 +1418,11 @@ function updateStatsUI(stats) {
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
                 <div>
                     <div style="color: #94a3b8; font-size: 0.6rem;">สูงสุด</div>
-                    <div style="color: #ef4444; font-weight: bold; font-size: 0.9rem;">${stats.max.toLocaleString()}</div>
+                    <div style="color: #ef4444; font-weight: bold; font-size: 0.9rem;">${typeof stats.max === 'number' ? stats.max.toLocaleString() : stats.max}</div>
                 </div>
                 <div>
                     <div style="color: #94a3b8; font-size: 0.6rem;">ต่ำสุด</div>
-                    <div style="color: #10b981; font-weight: bold; font-size: 0.9rem;">${stats.min.toLocaleString()}</div>
+                    <div style="color: #10b981; font-weight: bold; font-size: 0.9rem;">${typeof stats.min === 'number' ? stats.min.toLocaleString() : stats.min}</div>
                 </div>
                 <div>
                     <div style="color: #94a3b8; font-size: 0.6rem;">ค่าเฉลี่ย</div>
@@ -2217,6 +2238,13 @@ async function applyScopeFilter() {
                 updateUIElements();
                 generateBreaksUI(true);
                 updateMapForCurrentWeek();
+            } else {
+                if (statsControl) { map.removeControl(statsControl); statsControl = null; }
+                updateStatsUI({ max: '-', min: '-', mean: '-', median: '-', maxLocation: '', maxPeriod: '' });
+                if (legendControl) { map.removeControl(legendControl); legendControl = null; }
+                if (geojsonLayers.choropleth) { map.removeLayer(geojsonLayers.choropleth); geojsonLayers.choropleth = null; }
+                const timeline = document.getElementById('timeline');
+                if (timeline) timeline.style.display = 'none';
             }
             hideLoader();
         }, 300);

@@ -1,0 +1,20 @@
+{
+  "name": "spatiomotion-project",
+  "version": "1.0.0",
+  "description": "SpatioMotion: Transforming public health data into dynamic geospatial insights.",
+  "main": "app.js",
+  "scripts": {
+    "start": "npx serve .",
+    "dev": "npx serve .",
+    "start-dev": "npx serve ."
+  },
+  "keywords": [
+    "gis",
+    "public-health",
+    "leaflet",
+    "visualization",
+    "thailand"
+  ],
+  "author": "",
+  "license": "ISC"
+}

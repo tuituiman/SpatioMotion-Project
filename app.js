@@ -296,6 +296,54 @@ function fixGeoJSONEncoding(data) {
     return data;
 }
 
+// แก้ไข mojibake แบบ UTF-8-as-CP1252 (เช่น CSV ที่ SheetJS อ่านด้วย codepage 1252)
+// "วันที่" (UTF-8) → "à¸§à¸±à¸™à¸—à¸µà¹ˆ" → กลับเป็น "วันที่"
+function fixMojibakeStr(s) {
+    if (!s || typeof s !== 'string') return s;
+    // ถ้าไม่มี pattern ของ UTF-8 lead byte ที่อ่านเป็น Latin1 (à¸/à¹/à º...) ก็ปล่อยผ่าน
+    if (!/[À-ÿ]{2}/.test(s)) return s;
+    // ถ้ามี Thai Unicode ปกติอยู่แล้ว แสดงว่าไม่ใช่ mojibake
+    if (/[ก-๛]/.test(s)) return s;
+    try {
+        const bytes = new Uint8Array(s.length);
+        for (let i = 0; i < s.length; i++) {
+            const code = s.charCodeAt(i);
+            if (code > 0xFF) return s; // มี char นอก Latin1 → ไม่ใช่ pattern นี้
+            bytes[i] = code;
+        }
+        const fixed = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        // ตรวจว่า fix แล้วได้ Thai จริง ไม่งั้นคืนของเดิม
+        return /[ก-๛]/.test(fixed) ? fixed : s;
+    } catch (e) {
+        return s;
+    }
+}
+
+// แก้ mojibake ทั้ง keys และ string values ของ array-of-objects ที่ได้จาก XLSX
+function fixMojibakeJson(json) {
+    if (!Array.isArray(json) || json.length === 0) return json;
+    const rawKeys = Object.keys(json[0]);
+    const fixedKeys = rawKeys.map(fixMojibakeStr);
+    const keyChanged = rawKeys.some((k, i) => k !== fixedKeys[i]);
+    // ตรวจ value ตัวอย่างจากแถวแรกว่ามี mojibake ไหม
+    let valueChanged = false;
+    for (const k of rawKeys) {
+        const v = json[0][k];
+        if (typeof v === 'string' && fixMojibakeStr(v) !== v) { valueChanged = true; break; }
+    }
+    if (!keyChanged && !valueChanged) return json;
+
+    console.warn("⚠️ Excel/CSV encoding broken (UTF-8→CP1252 mismatch), fixing...");
+    return json.map(row => {
+        const out = {};
+        rawKeys.forEach((rk, i) => {
+            const v = row[rk];
+            out[fixedKeys[i]] = (typeof v === 'string') ? fixMojibakeStr(v) : v;
+        });
+        return out;
+    });
+}
+
 function renderSubdistrictLayer(data) {
     // แก้ encoding ก่อนวาด
     data = fixGeoJSONEncoding(data);
@@ -533,9 +581,10 @@ function handleFileUpload(file) {
     reader.onload = (e) => {
         try {
             const data = new Uint8Array(e.target.result);
-            const workbook = XLSX.read(data, { type: 'array' });
-            const json = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+            const workbook = XLSX.read(data, { type: 'array', codepage: 65001 });
+            let json = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
             if (!json || json.length === 0) { alert("ไฟล์ไม่มีข้อมูล"); hideLoader(); return; }
+            json = fixMojibakeJson(json);
 
             // ลอง auto-detect
             const rawKeys = Object.keys(json[0]);
@@ -1784,8 +1833,8 @@ function handleConverterFileUpload(file) {
     reader.onload = (e) => {
         try {
             const data = new Uint8Array(e.target.result);
-            const workbook = XLSX.read(data, { type: 'array' });
-            const json = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+            const workbook = XLSX.read(data, { type: 'array', codepage: 65001 });
+            let json = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
 
             if (json.length === 0) {
                 alert("ไฟล์ว่างเปล่าหรือไม่มีข้อมูล");
@@ -1793,6 +1842,7 @@ function handleConverterFileUpload(file) {
                 return;
             }
 
+            json = fixMojibakeJson(json);
             converterRawData = json;
             const headers = Object.keys(json[0]);
 
